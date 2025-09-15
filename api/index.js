@@ -11,7 +11,7 @@ app.use(express.urlencoded({ extended: true }));
 // X API 凭证（通过环境变量获取）
 const consumer_key = process.env.X_API_KEY;
 const consumer_secret = process.env.X_API_SECRET;
-const callback_url = 'https://your-vercel-app.vercel.app/api/callback'; // 替换为你的 Vercel 部署 URL
+const callback_url = process.env.CALLBACK_URL; // 使用环境变量 CALLBACK_URL
 
 // 初始化 OAuth
 const oauth = OAuth({
