@@ -25,6 +25,27 @@ const oauth = OAuth({
 // 图片 URL
 const imageUrl = 'https://i.postimg.cc/BSYB7WCj/GQr-QAj-Jbg-AA-ogm.jpg';
 
+// 根路径：返回简单的 HTML 页面
+app.get('/', (req, res) => {
+  res.send(`
+    <!DOCTYPE html>
+    <html lang="zh-CN">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>X 发布应用</title>
+    </head>
+    <body>
+      <h1>欢迎使用 X 发布应用</h1>
+      <p>点击下方按钮授权并在 X 上发布图片</p>
+      <a href="/api/auth">
+        <button>授权 X</button>
+      </a>
+    </body>
+    </html>
+  `);
+});
+
 // 路由：发起 OAuth 认证
 app.get('/api/auth', async (req, res) => {
   try {
@@ -44,7 +65,7 @@ app.get('/api/auth', async (req, res) => {
     res.redirect(`https://api.x.com/oauth/authenticate?oauth_token=${token_data.oauth_token}`);
   } catch (error) {
     console.error('Error in /auth:', error.response?.data || error.message);
-    res.status(500).send('Authentication failed');
+    res.status(500).send('认证失败');
   }
 });
 
@@ -78,7 +99,7 @@ app.get('/api/callback', async (req, res) => {
       url: 'https://api.x.com/2/tweets',
       method: 'POST',
       data: {
-        text: 'Check out this image!',
+        text: '看看这张图片！',
         media: {
           media_ids: [await uploadMedia(imageUrl, access_token)],
         },
@@ -92,10 +113,10 @@ app.get('/api/callback', async (req, res) => {
       data: tweet_data.data,
     });
 
-    res.send('Tweet posted successfully!');
+    res.send('推文发布成功！');
   } catch (error) {
     console.error('Error in /callback:', error.response?.data || error.message);
-    res.status(500).send('Failed to post tweet');
+    res.status(500).send('发布推文失败');
   }
 });
 
