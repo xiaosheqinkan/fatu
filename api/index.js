@@ -66,7 +66,7 @@ app.get('/api/auth', async (req, res) => {
         response_type: 'code',
         client_id,
         redirect_uri: callback_url,
-        scope: 'tweet.write tweet.read users.read offline.access', // 移除 media.upload
+        scope: 'tweet.write tweet.read users.read media.write offline.access', // 添加 media.write
         state,
         code_challenge,
         code_challenge_method: 'S256',
@@ -137,7 +137,7 @@ app.get('/api/callback', async (req, res) => {
   } catch (error) {
     console.error('Error in /callback:', error.response?.data || error.message);
     if (error.response?.status === 401) {
-      res.status(500).send('发布推文失败：401 Unauthorized - 可能是权限不足（检查 Write 权限和 scope: tweet.write），或访问令牌无效。请确认 X Developer Portal 的应用层级和权限');
+      res.status(500).send('发布推文失败：401 Unauthorized - 可能是权限不足（检查 Write 权限和 scope: tweet.write, media.write），或访问令牌无效。请确认 X Developer Portal 的应用层级和权限');
     } else {
       res.status(500).send('发布推文失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
     }
@@ -213,7 +213,7 @@ async function uploadMedia(imageUrl, access_token) {
   } catch (error) {
     console.error('Error uploading media (v2):', error.response?.data || error.message);
     if (error.response?.status === 401) {
-      throw new Error('媒体上传失败：401 Unauthorized - 可能是 Write 或 media.upload 权限缺失。请检查 X Developer Portal');
+      throw new Error('媒体上传失败：401 Unauthorized - 可能是 media.write 权限缺失。请检查 X Developer Portal');
     } else {
       throw new Error('媒体上传失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
     }
