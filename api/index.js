@@ -66,25 +66,27 @@ app.get('/api/auth', async (req, res) => {
         response_type: 'code',
         client_id,
         redirect_uri: callback_url,
-        scope: 'tweet.write tweet.read users.read offline.access media.upload', // 添加 media.upload
+        scope: 'tweet.write tweet.read users.read offline.access', // 移除 media.upload
         state,
         code_challenge,
         code_challenge_method: 'S256',
       });
 
+    console.log('Redirecting to auth URL:', authUrl); // 调试
     res.redirect(authUrl);
   } catch (error) {
     console.error('Error in /auth:', error.message);
-    res.status(500).send('认证失败：' + error.message);
+    res.status(500).send('认证失败：' + error.message + '。请检查 X Developer Portal 的 Client ID 和回调 URL');
   }
 });
 
 // 路由：处理 OAuth 2.0 回调
 app.get('/api/callback', async (req, res) => {
-  const { code, state, error } = req.query;
+  const { code, state, error, error_description } = req.query;
 
   if (error) {
-    return res.status(400).send('授权失败：' + error);
+    console.error('OAuth error:', error, error_description);
+    return res.status(400).send(`授权失败：${error} - ${error_description || '请检查 X Developer Portal 的权限和 scope'}`);
   }
 
   if (!code || !state) {
@@ -112,7 +114,7 @@ app.get('/api/callback', async (req, res) => {
     });
 
     const access_token = token_response.data.access_token;
-    console.log('Access token acquired successfully'); // 调试日志
+    console.log('Access token acquired:', access_token.substring(0, 10) + '...'); // 调试
 
     // 上传媒体并获取 media_id
     const media_id = await uploadMedia(imageUrl, access_token);
@@ -135,14 +137,14 @@ app.get('/api/callback', async (req, res) => {
   } catch (error) {
     console.error('Error in /callback:', error.response?.data || error.message);
     if (error.response?.status === 401) {
-      res.status(500).send('发布推文失败：401 Unauthorized - 可能是权限不足（检查 Write 权限和 scope），或访问令牌无效。请检查 X Developer Portal 的应用权限和层级');
+      res.status(500).send('发布推文失败：401 Unauthorized - 可能是权限不足（检查 Write 权限和 scope: tweet.write），或访问令牌无效。请确认 X Developer Portal 的应用层级和权限');
     } else {
       res.status(500).send('发布推文失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
     }
   }
 });
 
-// 上传图片到 X（使用 v2 chunked upload 端点，添加调试）
+// 上传图片到 X（使用 v2 chunked upload 端点）
 async function uploadMedia(imageUrl, access_token) {
   try {
     // 下载图片
@@ -155,7 +157,6 @@ async function uploadMedia(imageUrl, access_token) {
     }
 
     console.log('Starting media upload...'); // 调试
-
     // 步骤 1: 初始化上传
     const init_response = await axios.post('https://api.x.com/2/media/upload/initialize', {
       media_type: 'image/jpeg',
@@ -212,7 +213,7 @@ async function uploadMedia(imageUrl, access_token) {
   } catch (error) {
     console.error('Error uploading media (v2):', error.response?.data || error.message);
     if (error.response?.status === 401) {
-      throw new Error('媒体上传失败：401 Unauthorized - 可能是 Write 权限或 media.upload scope 缺失。请检查 X Developer Portal');
+      throw new Error('媒体上传失败：401 Unauthorized - 可能是 Write 或 media.upload 权限缺失。请检查 X Developer Portal');
     } else {
       throw new Error('媒体上传失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
     }
