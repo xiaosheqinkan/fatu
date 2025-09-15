@@ -1,6 +1,5 @@
 const express = require('express');
 const axios = require('axios');
-const OAuth = require('oauth-1.0a');
 const crypto = require('crypto');
 const querystring = require('querystring');
 
@@ -9,21 +8,24 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // X API 凭证（通过环境变量获取）
-const consumer_key = process.env.X_API_KEY;
-const consumer_secret = process.env.X_API_SECRET;
-const callback_url = process.env.CALLBACK_URL; // 使用环境变量 CALLBACK_URL
-
-// 初始化 OAuth
-const oauth = OAuth({
-  consumer: { key: consumer_key, secret: consumer_secret },
-  signature_method: 'HMAC-SHA1',
-  hash_function(base_string, key) {
-    return crypto.createHmac('sha1', key).update(base_string).digest('base64');
-  },
-});
+const client_id = process.env.X_CLIENT_ID;
+const callback_url = process.env.CALLBACK_URL; // https://fatu-snowy.vercel.app/api/callback
 
 // 图片 URL
 const imageUrl = 'https://i.postimg.cc/BSYB7WCj/GQr-QAj-Jbg-AA-ogm.jpg';
+
+// 生成 PKCE 代码对
+function generatePKCE() {
+  const code_verifier = crypto.randomBytes(32).toString('base64url');
+  const code_challenge = crypto
+    .createHash('sha256')
+    .update(code_verifier)
+    .digest('base64url');
+  return { code_verifier, code_challenge };
+}
+
+// 临时存储 code_verifier（生产环境应使用数据库或 Redis）
+const codeVerifiers = new Map();
 
 // 根路径：返回简单的 HTML 页面
 app.get('/', (req, res) => {
@@ -46,80 +48,82 @@ app.get('/', (req, res) => {
   `);
 });
 
-// 路由：发起 OAuth 认证
+// 路由：发起 OAuth 2.0 PKCE 认证
 app.get('/api/auth', async (req, res) => {
   try {
     // 检查环境变量
-    if (!consumer_key || !consumer_secret || !callback_url) {
-      return res.status(500).send('环境变量未设置：请检查 X_API_KEY, X_API_SECRET, CALLBACK_URL 在 Vercel 中');
+    if (!client_id || !callback_url) {
+      return res.status(500).send('环境变量未设置：请检查 X_CLIENT_ID, CALLBACK_URL 在 Vercel 中');
     }
 
-    const request_data = {
-      url: 'https://api.x.com/1.1/oauth/request_token',
-      method: 'POST',
-      data: { oauth_callback: callback_url },
-    };
+    // 生成 PKCE 代码
+    const { code_verifier, code_challenge } = generatePKCE();
+    const state = crypto.randomBytes(16).toString('hex'); // 防止 CSRF
+    codeVerifiers.set(state, code_verifier); // 存储 code_verifier
 
-    const response = await axios({
-      url: request_data.url,
-      method: request_data.method,
-      headers: oauth.toHeader(oauth.authorize(request_data)),
-    });
+    const authUrl = `https://x.com/i/oauth2/authorize?` +
+      querystring.stringify({
+        response_type: 'code',
+        client_id,
+        redirect_uri: callback_url,
+        scope: 'tweet.write tweet.read users.read offline.access', // 写权限
+        state,
+        code_challenge,
+        code_challenge_method: 'S256',
+      });
 
-    const token_data = querystring.parse(response.data);
-    res.redirect(`https://api.x.com/oauth/authenticate?oauth_token=${token_data.oauth_token}`);
+    res.redirect(authUrl);
   } catch (error) {
-    console.error('Error in /auth:', error.response?.data || error.message);
-    if (error.response?.status === 401) {
-      res.status(500).send('认证失败：API 密钥无效或签名错误。请检查 X_API_KEY 和 X_API_SECRET');
-    } else if (error.response?.status === 400) {
-      res.status(500).send('认证失败：回调 URL 无效。请检查 CALLBACK_URL 和 X Developer Portal 设置');
-    } else {
-      res.status(500).send('认证失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
-    }
+    console.error('Error in /auth:', error.message);
+    res.status(500).send('认证失败：' + error.message);
   }
 });
 
-// 路由：处理 OAuth 回调
+// 路由：处理 OAuth 2.0 回调
 app.get('/api/callback', async (req, res) => {
-  const { oauth_token, oauth_verifier } = req.query;
+  const { code, state, error } = req.query;
 
-  if (!oauth_token || !oauth_verifier) {
-    return res.status(400).send('缺少授权参数');
+  if (error) {
+    return res.status(400).send('授权失败：' + error);
   }
 
-  try {
-    // 获取访问令牌
-    const token_request_data = {
-      url: 'https://api.x.com/1.1/oauth/access_token',
-      method: 'POST',
-      data: { oauth_verifier },
-    };
+  if (!code || !state) {
+    return res.status(400).send('缺少授权参数：code 或 state');
+  }
 
-    const oauth_token_obj = { key: oauth_token, secret: '' }; // 临时 secret 为空
-    const token_response = await axios({
-      url: token_request_data.url,
-      method: token_request_data.method,
-      headers: oauth.toHeader(oauth.authorize(token_request_data, oauth_token_obj)),
+  const code_verifier = codeVerifiers.get(state);
+  if (!code_verifier) {
+    return res.status(400).send('无效 state 参数');
+  }
+  codeVerifiers.delete(state); // 清理
+
+  try {
+    // 交换访问令牌
+    const token_response = await axios.post('https://api.x.com/2/oauth2/token', querystring.stringify({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: callback_url,
+      client_id,
+      code_verifier,
+    }), {
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
     });
 
-    const access_token_data = querystring.parse(token_response.data);
-    const access_token = {
-      key: access_token_data.oauth_token,
-      secret: access_token_data.oauth_token_secret,
-    };
+    const access_token = token_response.data.access_token;
 
     // 上传媒体并获取 media_id
     const media_id = await uploadMedia(imageUrl, access_token);
 
-    // 发布带图片的推文（v2 API，符合手册）
+    // 发布带图片的推文（v2 API）
     const tweet_data = {
       url: 'https://api.x.com/2/tweets',
       method: 'POST',
       data: {
         text: '看看这张图片！',
         media: {
-          media_ids: [media_id], // 数组形式，符合 v2 要求
+          media_ids: [media_id],
         },
       },
     };
@@ -128,10 +132,10 @@ app.get('/api/callback', async (req, res) => {
       url: tweet_data.url,
       method: tweet_data.method,
       headers: {
-        ...oauth.toHeader(oauth.authorize(tweet_data, access_token)),
-        'Content-Type': 'application/json', // v2 需要 JSON
+        Authorization: `Bearer ${access_token}`,
+        'Content-Type': 'application/json',
       },
-      data: JSON.stringify(tweet_data.data), // v2 需要 JSON 体
+      data: JSON.stringify(tweet_data.data),
     });
 
     console.log('Tweet posted:', tweet_response.data);
@@ -150,18 +154,18 @@ async function uploadMedia(imageUrl, access_token) {
     const imageBuffer = Buffer.from(imageResponse.data);
     const totalBytes = imageBuffer.length;
 
-    if (totalBytes > 5 * 1024 * 1024) { // 5MB 限制
+    if (totalBytes > 5 * 1024 * 1024) {
       throw new Error('图片太大，超过 5MB');
     }
 
-    // 步骤 1: 初始化上传（v2: POST /2/media/upload/initialize）
+    // 步骤 1: 初始化上传
     const init_data = {
       url: 'https://api.x.com/2/media/upload/initialize',
       method: 'POST',
       data: {
-        media_type: 'image/jpeg', // 根据图片类型调整
+        media_type: 'image/jpeg',
         total_bytes: totalBytes,
-        media_category: 'tweet_image', // 手册推荐用于帖子图片
+        media_category: 'tweet_image',
       },
     };
 
@@ -169,27 +173,24 @@ async function uploadMedia(imageUrl, access_token) {
       url: init_data.url,
       method: init_data.method,
       headers: {
-        ...oauth.toHeader(oauth.authorize(init_data, access_token)),
+        Authorization: `Bearer ${access_token}`,
         'Content-Type': 'application/json',
       },
       data: JSON.stringify(init_data.data),
     });
 
-    const upload_id = init_response.data.upload_id; // v2 返回 upload_id
+    const upload_id = init_response.data.upload_id;
 
     if (!upload_id) {
       throw new Error('初始化失败：未获取到 upload_id');
     }
 
-    // 步骤 2: 追加媒体数据（v2: POST /2/media/upload/{upload_id}/append）
+    // 步骤 2: 追加媒体数据
     const append_data = {
       url: `https://api.x.com/2/media/upload/${upload_id}/append`,
       method: 'POST',
       headers: {
-        ...oauth.toHeader(oauth.authorize({
-          url: append_data.url,
-          method: append_data.method,
-        }, access_token)),
+        Authorization: `Bearer ${access_token}`,
         'Content-Type': 'application/octet-stream',
       },
       data: imageBuffer,
@@ -201,27 +202,27 @@ async function uploadMedia(imageUrl, access_token) {
       throw new Error('追加失败：' + (append_response.data?.errors?.[0]?.message || '未知错误'));
     }
 
-    // 步骤 3: 最终化上传（v2: POST /2/media/upload/{upload_id}/finalize）
+    // 步骤 3: 最终化上传
     const finalize_data = {
       url: `https://api.x.com/2/media/upload/${upload_id}/finalize`,
       method: 'POST',
-      headers: oauth.toHeader(oauth.authorize(finalize_data, access_token)),
+      headers: {
+        Authorization: `Bearer ${access_token}`,
+      },
     };
 
     const finalize_response = await axios(finalize_data);
 
-    const media_id = finalize_response.data.media_id_string; // v2 返回 media_id_string
+    const media_id = finalize_response.data.media_id_string;
 
     if (!media_id) {
       throw new Error('最终化失败：未获取到 media_id');
     }
 
-    // 可选: 检查处理状态（小图片通常无需轮询）
     if (finalize_response.data.processing_info) {
-      const state = finalize_response.data.processing_info.state;
-      console.log('媒体处理状态：', state);
-      if (state !== 'succeeded') {
-        throw new Error('媒体处理未完成，状态：' + state);
+      console.log('媒体处理状态：', finalize_response.data.processing_info.state);
+      if (finalize_response.data.processing_info.state !== 'succeeded') {
+        throw new Error('媒体处理未完成，状态：' + finalize_response.data.processing_info.state);
       }
     }
 
