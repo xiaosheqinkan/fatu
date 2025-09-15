@@ -24,7 +24,7 @@ function generatePKCE() {
   return { code_verifier, code_challenge };
 }
 
-// 临时存储 code_verifier（生产环境应使用数据库或 Redis）
+// 临时存储 code_verifier（生产环境建议用 Redis）
 const codeVerifiers = new Map();
 
 // 根路径：返回简单的 HTML 页面
@@ -66,7 +66,7 @@ app.get('/api/auth', async (req, res) => {
         response_type: 'code',
         client_id,
         redirect_uri: callback_url,
-        scope: 'tweet.write tweet.read users.read offline.access', // 写权限
+        scope: 'tweet.write tweet.read users.read offline.access media.upload', // 添加 media.upload
         state,
         code_challenge,
         code_challenge_method: 'S256',
@@ -112,41 +112,37 @@ app.get('/api/callback', async (req, res) => {
     });
 
     const access_token = token_response.data.access_token;
+    console.log('Access token acquired successfully'); // 调试日志
 
     // 上传媒体并获取 media_id
     const media_id = await uploadMedia(imageUrl, access_token);
 
     // 发布带图片的推文（v2 API）
-    const tweet_data = {
-      url: 'https://api.x.com/2/tweets',
-      method: 'POST',
-      data: {
-        text: '看看这张图片！',
-        media: {
-          media_ids: [media_id],
-        },
+    const tweet_response = await axios.post('https://api.x.com/2/tweets', {
+      text: '看看这张图片！',
+      media: {
+        media_ids: [media_id],
       },
-    };
-
-    const tweet_response = await axios({
-      url: tweet_data.url,
-      method: tweet_data.method,
+    }, {
       headers: {
         Authorization: `Bearer ${access_token}`,
         'Content-Type': 'application/json',
       },
-      data: JSON.stringify(tweet_data.data),
     });
 
     console.log('Tweet posted:', tweet_response.data);
     res.send('推文发布成功！帖子 ID: ' + tweet_response.data.data.id);
   } catch (error) {
     console.error('Error in /callback:', error.response?.data || error.message);
-    res.status(500).send('发布推文失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
+    if (error.response?.status === 401) {
+      res.status(500).send('发布推文失败：401 Unauthorized - 可能是权限不足（检查 Write 权限和 scope），或访问令牌无效。请检查 X Developer Portal 的应用权限和层级');
+    } else {
+      res.status(500).send('发布推文失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
+    }
   }
 });
 
-// 上传图片到 X（使用 v2 chunked upload 端点）
+// 上传图片到 X（使用 v2 chunked upload 端点，添加调试）
 async function uploadMedia(imageUrl, access_token) {
   try {
     // 下载图片
@@ -158,62 +154,48 @@ async function uploadMedia(imageUrl, access_token) {
       throw new Error('图片太大，超过 5MB');
     }
 
-    // 步骤 1: 初始化上传
-    const init_data = {
-      url: 'https://api.x.com/2/media/upload/initialize',
-      method: 'POST',
-      data: {
-        media_type: 'image/jpeg',
-        total_bytes: totalBytes,
-        media_category: 'tweet_image',
-      },
-    };
+    console.log('Starting media upload...'); // 调试
 
-    const init_response = await axios({
-      url: init_data.url,
-      method: init_data.method,
+    // 步骤 1: 初始化上传
+    const init_response = await axios.post('https://api.x.com/2/media/upload/initialize', {
+      media_type: 'image/jpeg',
+      total_bytes: totalBytes,
+      media_category: 'tweet_image',
+    }, {
       headers: {
         Authorization: `Bearer ${access_token}`,
         'Content-Type': 'application/json',
       },
-      data: JSON.stringify(init_data.data),
     });
 
     const upload_id = init_response.data.upload_id;
+    console.log('Upload ID:', upload_id); // 调试
 
     if (!upload_id) {
       throw new Error('初始化失败：未获取到 upload_id');
     }
 
     // 步骤 2: 追加媒体数据
-    const append_data = {
-      url: `https://api.x.com/2/media/upload/${upload_id}/append`,
-      method: 'POST',
+    const append_response = await axios.post(`https://api.x.com/2/media/upload/${upload_id}/append`, imageBuffer, {
       headers: {
         Authorization: `Bearer ${access_token}`,
         'Content-Type': 'application/octet-stream',
       },
-      data: imageBuffer,
-    };
-
-    const append_response = await axios(append_data);
+    });
 
     if (append_response.status !== 200 && append_response.status !== 204) {
       throw new Error('追加失败：' + (append_response.data?.errors?.[0]?.message || '未知错误'));
     }
 
     // 步骤 3: 最终化上传
-    const finalize_data = {
-      url: `https://api.x.com/2/media/upload/${upload_id}/finalize`,
-      method: 'POST',
+    const finalize_response = await axios.post(`https://api.x.com/2/media/upload/${upload_id}/finalize`, {}, {
       headers: {
         Authorization: `Bearer ${access_token}`,
       },
-    };
-
-    const finalize_response = await axios(finalize_data);
+    });
 
     const media_id = finalize_response.data.media_id_string;
+    console.log('Media ID:', media_id); // 调试
 
     if (!media_id) {
       throw new Error('最终化失败：未获取到 media_id');
@@ -229,7 +211,11 @@ async function uploadMedia(imageUrl, access_token) {
     return media_id;
   } catch (error) {
     console.error('Error uploading media (v2):', error.response?.data || error.message);
-    throw new Error('媒体上传失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
+    if (error.response?.status === 401) {
+      throw new Error('媒体上传失败：401 Unauthorized - 可能是 Write 权限或 media.upload scope 缺失。请检查 X Developer Portal');
+    } else {
+      throw new Error('媒体上传失败：' + (error.response?.data?.errors?.[0]?.message || error.message));
+    }
   }
 }
 
