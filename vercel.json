@@ -20,11 +20,5 @@
     "api/index.js": {
       "maxDuration": 30
     }
-  },
-  "crons": [
-    {
-      "path": "/api/daily-check",
-      "schedule": "0 19 * * *"
-    }
-  ]
+  }
 }

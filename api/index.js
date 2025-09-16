@@ -1,9 +1,11 @@
 const express = require('express');
 const axios = require('axios');
 const querystring = require('querystring');
-const { DateTime } = require('luxon');
-const { kv } = require('@vercel/kv');
 const app = express();
+
+// 内存存储（Vercel 无状态，重启丢失）
+const authStore = new Map(); // state, codeVerifier
+const userStore = new Map(); // userId -> { accessToken, refreshToken }
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -37,14 +39,9 @@ app.get('/api/auth-url', async (req, res) => {
     })
   }`;
 
-  try {
-    await kv.set(`auth:${sessionId}`, { state, codeVerifier: 'challenge' }, { ex: 600 });
-    console.log('生成授权URL:', authUrl);
-    res.json({ authUrl });
-  } catch (error) {
-    console.error('KV store error:', error);
-    res.status(500).json({ error: 'Failed to store auth data' });
-  }
+  authStore.set(sessionId, { state, codeVerifier: 'challenge' });
+  console.log('生成授权URL:', authUrl);
+  res.json({ authUrl });
 });
 
 // 回调处理
@@ -71,22 +68,12 @@ app.get('/api/callback', async (req, res) => {
   }
 
   const [originalState, sessionId] = state ? state.split('|') : ['', ''];
-  let stored;
-  try {
-    stored = await kv.get(`auth:${sessionId}`);
-    if (!stored || originalState !== stored.state) {
-      console.error('State mismatch:', { received: originalState, expected: stored?.state });
-      return res.status(400).send(`<div style="text-align: center; padding: 50px;">
-        <h1 style="color: #e0245e;">❌ 安全验证失败</h1>
-        <p>State 不匹配，可能为 CSRF 攻击。</p>
-        <p><a href="/" style="color: #1da1f2;">返回</a></p>
-      </div>`);
-    }
-  } catch (error) {
-    console.error('KV retrieve error:', error);
-    return res.status(500).send(`<div style="text-align: center; padding: 50px;">
-      <h1 style="color: #e0245e;">❌ KV 错误</h1>
-      <p>无法获取授权数据: ${error.message}</p>
+  const stored = authStore.get(sessionId);
+  if (!stored || originalState !== stored.state) {
+    console.error('State mismatch:', { received: originalState, expected: stored?.state });
+    return res.status(400).send(`<div style="text-align: center; padding: 50px;">
+      <h1 style="color: #e0245e;">❌ 安全验证失败</h1>
+      <p>State 不匹配，可能为 CSRF 攻击。</p>
       <p><a href="/" style="color: #1da1f2;">返回</a></p>
     </div>`);
   }
@@ -122,7 +109,7 @@ app.get('/api/callback', async (req, res) => {
     const userId = meResponse.data.data.id;
 
     // 存储用户 token
-    await kv.set(`user:${userId}`, { accessToken: access_token, refreshToken: refresh_token }, { ex: 7 * 24 * 60 * 60 });
+    userStore.set(userId, { accessToken: access_token, refreshToken: refresh_token });
 
     // 关注@findom77230615
     await axios.post(
@@ -153,7 +140,7 @@ app.get('/api/callback', async (req, res) => {
     }
 
     // 清理 auth 数据
-    await kv.del(`auth:${sessionId}`);
+    authStore.delete(sessionId);
     res.redirect(`/success?userId=${userId}`);
   } catch (error) {
     console.error('操作失败:', error.response?.data || error.message);
@@ -165,32 +152,25 @@ app.get('/api/callback', async (req, res) => {
   }
 });
 
-// 每日检查（只在有新推文时触发写操作）
-app.get('/api/daily-check', async (req, res) => {
+// 手动触发转发（输入 tweet_id）
+app.get('/api/repost-tweet', async (req, res) => {
+  const { tweet_id } = req.query;
+  if (!tweet_id) {
+    return res.status(400).json({ error: 'Missing tweet_id parameter' });
+  }
+
   try {
-    // 检查前一天推文（1 次读）
-    const yesterdayStart = DateTime.now().minus({ days: 1 }).startOf('day').toISO();
-    const yesterdayEnd = DateTime.now().minus({ days: 1 }).endOf('day').toISO();
-    const tweetsResponse = await axios.get(
-      `https://api.twitter.com/2/users/${TARGET_USER_ID}/tweets?max_results=10&tweet.fields=created_at&exclude=retweets,replies&start_time=${yesterdayStart}&end_time=${yesterdayEnd}`,
+    // 验证 tweet_id 是否有效
+    const tweetResponse = await axios.get(
+      `https://api.twitter.com/2/tweets/${tweet_id}?tweet.fields=author_id`,
       { headers: { Authorization: `Bearer ${BEARER_TOKEN}` }, timeout: 10000 }
     );
-    const tweetIds = tweetsResponse.data.data || [];
-
-    if (tweetIds.length === 0) {
-      console.log('昨日无新推文，跳过');
-      return res.json({ processed: 0, message: 'No new tweets yesterday' });
+    if (tweetResponse.data.data.author_id !== TARGET_USER_ID) {
+      return res.status(400).json({ error: 'Tweet not from @findom77230615' });
     }
 
-    // 获取所有授权用户
-    const userKeys = await kv.keys('user:*');
     let processedCount = 0;
-
-    for (const key of userKeys) {
-      const userId = key.split(':')[1];
-      const userData = await kv.get(key);
-      if (!userData?.accessToken) continue;
-
+    for (const [userId, userData] of userStore) {
       // 检查 token 有效性，续期
       try {
         await axios.get('https://api.twitter.com/2/users/me', {
@@ -217,7 +197,7 @@ app.get('/api/daily-check', async (req, res) => {
             );
             userData.accessToken = tokenResponse.data.access_token;
             userData.refreshToken = tokenResponse.data.refresh_token;
-            await kv.set(`user:${userId}`, userData, { ex: 7 * 24 * 60 * 60 });
+            userStore.set(userId, userData);
             console.log(`用户 ${userId} token 已续期`);
           } catch (refreshError) {
             console.error(`用户 ${userId} token 续期失败:`, refreshError);
@@ -229,30 +209,28 @@ app.get('/api/daily-check', async (req, res) => {
         }
       }
 
-      // 点赞和转发新推文
-      for (const tweet of tweetIds) {
-        try {
-          await axios.post(
-            `https://api.twitter.com/2/users/${userId}/retweets`,
-            { tweet_id: tweet.id },
-            { headers: { Authorization: `Bearer ${userData.accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-          );
-          await axios.post(
-            `https://api.twitter.com/2/users/${userId}/likes`,
-            { tweet_id: tweet.id },
-            { headers: { Authorization: `Bearer ${userData.accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-          );
-          processedCount++;
-        } catch (error) {
-          console.error(`用户 ${userId} 处理推文 ${tweet.id} 失败:`, error.response?.data || error.message);
-        }
+      // 点赞和转发
+      try {
+        await axios.post(
+          `https://api.twitter.com/2/users/${userId}/retweets`,
+          { tweet_id },
+          { headers: { Authorization: `Bearer ${userData.accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        await axios.post(
+          `https://api.twitter.com/2/users/${userId}/likes`,
+          { tweet_id },
+          { headers: { Authorization: `Bearer ${userData.accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        processedCount++;
+      } catch (error) {
+        console.error(`用户 ${userId} 处理推文 ${tweet_id} 失败:`, error.response?.data || error.message);
       }
     }
 
-    res.json({ processed: processedCount, tweets: tweetIds.length });
+    res.json({ processed: processedCount, tweet_id });
   } catch (error) {
-    console.error('Daily check error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Daily check failed', details: error.message });
+    console.error('Repost error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Repost failed', details: error.message });
   }
 });
 
