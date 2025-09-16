@@ -8,7 +8,15 @@
   ],
   "routes": [
     {
-      "src": "/api/(.*)",
+      "src": "/api/auth-url",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "/api/callback",
+      "dest": "/api/index.js"
+    },
+    {
+      "src": "/api/repost-tweet",
       "dest": "/api/index.js"
     },
     {
