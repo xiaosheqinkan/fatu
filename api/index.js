@@ -6,16 +6,18 @@ const app = express();
 app.use(express.json());
 app.use(express.static('public'));
 
-// 替换为你的X开发者账户的Bearer Token（从 https://developer.x.com 获取）
-const BEARER_TOKEN = 'YOUR_BEARER_TOKEN_HERE'; // 替换
+// 从环境变量读取密钥
+const BEARER_TOKEN = process.env.X_BEARER_TOKEN;
+const API_KEY = process.env.X_API_KEY;
+const API_SECRET = process.env.X_API_SECRET;
 const TARGET_USER_ID = '1263316369044467712'; // @findom77230615
 let userAccessToken = null; // 临时存储（生产用数据库）
 
 // 获取授权URL
 app.get('/api/auth-url', (req, res) => {
   const client = new TwitterApi({
-    appKey: 'YOUR_API_KEY_HERE',
-    appSecret: 'YOUR_API_SECRET_HERE',
+    appKey: API_KEY,
+    appSecret: API_SECRET,
   });
 
   const { url, codeVerifier, state } = client.generateOAuth2PKCEUrl({
@@ -28,7 +30,7 @@ app.get('/api/auth-url', (req, res) => {
   res.json({ authUrl: url });
 });
 
-// 回调处理
+// 回调处理：关注 + 点赞/转发最新5条推文
 app.get('/api/callback', async (req, res) => {
   const { code, state } = req.query;
   if (state !== global.state) {
@@ -36,8 +38,8 @@ app.get('/api/callback', async (req, res) => {
   }
 
   const client = new TwitterApi({
-    appKey: 'YOUR_API_KEY_HERE',
-    appSecret: 'YOUR_API_SECRET_HERE',
+    appKey: API_KEY,
+    appSecret: API_SECRET,
   });
 
   try {
@@ -55,17 +57,15 @@ app.get('/api/callback', async (req, res) => {
     // 关注@findom77230615
     await userClient.v2.follow(userId, TARGET_USER_ID);
 
-    // 获取本周推文
+    // 获取最新5条推文
     const client = new TwitterApi(BEARER_TOKEN);
-    const weekStart = DateTime.now().minus({ days: 7 }).toISO();
     const tweets = await client.v2.userTimeline(TARGET_USER_ID, {
-      max_results: 10,
+      max_results: 5,
       'tweet.fields': 'created_at',
       exclude: 'retweets,replies',
-      start_time: weekStart,
     });
 
-    const tweetIds = (tweets.data?.data || []).slice(0, 5);
+    const tweetIds = tweets.data?.data || [];
     for (const tweet of tweetIds) {
       await userClient.v2.repost(userId, tweet.id);
       await userClient.v2.like(userId, tweet.id);
