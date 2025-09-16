@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>X 自动关注与转发</title>
+</head>
+<body>
+    <h1>授权 X 账户</h1>
+    <button id="authBtn">点击授权</button>
+    <div id="status"></div>
+
+    <script>
+        const btn = document.getElementById('authBtn');
+        const status = document.getElementById('status');
+
+        btn.addEventListener('click', async () => {
+            status.innerHTML = '获取授权...';
+            const res = await fetch('/api/auth-url');
+            const { authUrl } = await res.json();
+            window.location.href = authUrl;
+        });
+
+        if (window.location.pathname === '/success') {
+            status.innerHTML = '授权成功！已关注并处理本周推文。';
+        }
+    </script>
+</body>
+</html>
