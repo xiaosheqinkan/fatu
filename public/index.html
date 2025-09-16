@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
   <meta charset="UTF-8">
-  <title>X 自动关注与转发</title>
+  <title>X 自动关注</title>
   <style>
     body {
       font-family: Arial, sans-serif;
@@ -43,16 +43,16 @@
 <body>
   <div class="container">
     <h1>授权 X 账户</h1>
-    <p>点击授权以关注@findom77230615并自动转发/点赞。</p>
+    <p>点击授权以关注@findom77230615</p>
     <button class="btn" id="authBtn">点击授权</button>
     <div id="status" class="note"></div>
   </div>
 
   <script>
-    const btn = document.getElementById('authBtn');
+    const authBtn = document.getElementById('authBtn');
     const status = document.getElementById('status');
 
-    btn.addEventListener('click', async () => {
+    authBtn.addEventListener('click', async () => {
       status.innerHTML = '获取授权...';
       try {
         const res = await fetch('/api/auth-url');
@@ -64,7 +64,7 @@
     });
 
     if (window.location.pathname === '/success') {
-      status.innerHTML = '授权成功！已关注并处理最新推文。';
+      status.innerHTML = '授权成功！已关注@findom77230615';
     }
   </script>
 </body>

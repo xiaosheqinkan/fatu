@@ -20,10 +20,6 @@
       "dest": "/api/index.js"
     },
     {
-      "src": "/api/repost-tweet",
-      "dest": "/api/index.js"
-    },
-    {
       "src": "/(.*)",
       "dest": "/public/index.html"
     }

@@ -1,7 +1,7 @@
 {
   "name": "x-auto-follow-repost",
   "version": "1.0.0",
-  "description": "Auto follow, like, and repost @findom77230615 tweets",
+  "description": "Auto follow @findom77230615",
   "main": "api/index.js",
   "scripts": {
     "start": "node api/index.js"

