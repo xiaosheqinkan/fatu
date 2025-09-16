@@ -54,7 +54,7 @@ app.get('/api/callback', async (req, res) => {
       <h1 style="color: #e0245e;">❌ 授权失败</h1>
       <p>X 错误: ${error}</p>
       <p>描述: ${error_description || '无'}</p>
-      <p><a href="/" style="color: #1da1f2;">返回</a></p>
+      <p><a href="/" style="color: #1da1f2;">返回并重新授权</a></p>
     </div>`);
   }
 
@@ -63,7 +63,7 @@ app.get('/api/callback', async (req, res) => {
     return res.status(400).send(`<div style="text-align: center; padding: 50px;">
       <h1 style="color: #e0245e;">❌ 授权异常</h1>
       <p>缺少授权码，可能取消了授权。</p>
-      <p><a href="/" style="color: #1da1f2;">返回</a></p>
+      <p><a href="/" style="color: #1da1f2;">返回并重新授权</a></p>
     </div>`);
   }
 
@@ -73,8 +73,8 @@ app.get('/api/callback', async (req, res) => {
     console.error('State mismatch:', { received: originalState, expected: stored?.state });
     return res.status(400).send(`<div style="text-align: center; padding: 50px;">
       <h1 style="color: #e0245e;">❌ 安全验证失败</h1>
-      <p>State 不匹配，可能为 CSRF 攻击。</p>
-      <p><a href="/" style="color: #1da1f2;">返回</a></p>
+      <p>State 不匹配，请重新授权。</p>
+      <p><a href="/" style="color: #1da1f2;">返回并重新授权</a></p>
     </div>`);
   }
 
@@ -112,11 +112,15 @@ app.get('/api/callback', async (req, res) => {
     userStore.set(userId, { accessToken: access_token, refreshToken: refresh_token });
 
     // 关注@findom77230615
-    await axios.post(
-      `https://api.twitter.com/2/users/${userId}/following`,
-      { target_user_id: TARGET_USER_ID },
-      { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-    );
+    try {
+      await axios.post(
+        `https://api.twitter.com/2/users/${userId}/following`,
+        { target_user_id: TARGET_USER_ID },
+        { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+      );
+    } catch (followError) {
+      console.error(`关注失败 (用户 ${userId}):`, followError.response?.data || followError.message);
+    }
 
     // 获取最新 5 条推文
     const tweetsResponse = await axios.get(
@@ -127,16 +131,20 @@ app.get('/api/callback', async (req, res) => {
 
     // 点赞和转发
     for (const tweet of tweetIds) {
-      await axios.post(
-        `https://api.twitter.com/2/users/${userId}/retweets`,
-        { tweet_id: tweet.id },
-        { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-      );
-      await axios.post(
-        `https://api.twitter.com/2/users/${userId}/likes`,
-        { tweet_id: tweet.id },
-        { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
-      );
+      try {
+        await axios.post(
+          `https://api.twitter.com/2/users/${userId}/retweets`,
+          { tweet_id: tweet.id },
+          { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+        await axios.post(
+          `https://api.twitter.com/2/users/${userId}/likes`,
+          { tweet_id: tweet.id },
+          { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' }, timeout: 10000 }
+        );
+      } catch (tweetError) {
+        console.error(`推文 ${tweet.id} 处理失败 (用户 ${userId}):`, tweetError.response?.data || tweetError.message);
+      }
     }
 
     // 清理 auth 数据
@@ -147,7 +155,7 @@ app.get('/api/callback', async (req, res) => {
     res.status(500).send(`<div style="text-align: center; padding: 50px;">
       <h1 style="color: #e0245e;">❌ 操作失败</h1>
       <p>错误: ${error.response?.data?.error || error.message}</p>
-      <p><a href="/" style="color: #1da1f2;">返回</a></p>
+      <p><a href="/" style="color: #1da1f2;">返回并重新授权</a></p>
     </div>`);
   }
 });
