@@ -152,7 +152,7 @@ app.get('/api/callback', async (req, res) => {
   }
 });
 
-// 手动触发转发（输入 tweet_id）
+// 手动触发转发
 app.get('/api/repost-tweet', async (req, res) => {
   const { tweet_id } = req.query;
   if (!tweet_id) {
@@ -160,11 +160,15 @@ app.get('/api/repost-tweet', async (req, res) => {
   }
 
   try {
-    // 验证 tweet_id 是否有效
+    // 验证 tweet_id
     const tweetResponse = await axios.get(
       `https://api.twitter.com/2/tweets/${tweet_id}?tweet.fields=author_id`,
       { headers: { Authorization: `Bearer ${BEARER_TOKEN}` }, timeout: 10000 }
     );
+
+    if (!tweetResponse.data.data) {
+      return res.status(400).json({ error: 'Invalid tweet_id or tweet not found' });
+    }
     if (tweetResponse.data.data.author_id !== TARGET_USER_ID) {
       return res.status(400).json({ error: 'Tweet not from @findom77230615' });
     }
@@ -230,7 +234,7 @@ app.get('/api/repost-tweet', async (req, res) => {
     res.json({ processed: processedCount, tweet_id });
   } catch (error) {
     console.error('Repost error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Repost failed', details: error.message });
+    res.status(500).json({ error: 'Repost failed', details: error.response?.data?.error || error.message });
   }
 });
 
